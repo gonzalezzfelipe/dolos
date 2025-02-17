@@ -1,4 +1,4 @@
-use dolos::{ledger::pparams::Genesis, state, wal};
+use dolos::{index, ledger::pparams::Genesis, state, wal};
 use miette::{Context as _, IntoDiagnostic};
 use std::{path::PathBuf, time::Duration};
 use tokio::task::JoinHandle;
@@ -10,7 +10,7 @@ use dolos::prelude::*;
 
 use crate::{GenesisConfig, LoggingConfig};
 
-pub type Stores = (wal::redb::WalStore, state::LedgerStore);
+pub type Stores = (wal::redb::WalStore, state::LedgerStore, index::IndexStore);
 
 pub fn open_wal(config: &crate::Config) -> Result<wal::redb::WalStore, Error> {
     let root = &config.storage.path;
@@ -36,6 +36,15 @@ pub fn define_ledger_path(config: &crate::Config) -> Result<PathBuf, Error> {
     Ok(ledger)
 }
 
+pub fn define_index_path(config: &crate::Config) -> Result<PathBuf, Error> {
+    let root = &config.storage.path;
+    std::fs::create_dir_all(root).map_err(Error::storage)?;
+
+    let index = root.join("index");
+
+    Ok(index)
+}
+
 pub fn open_data_stores(config: &crate::Config) -> Result<Stores, Error> {
     let root = &config.storage.path;
 
@@ -52,7 +61,12 @@ pub fn open_data_stores(config: &crate::Config) -> Result<Stores, Error> {
         .map_err(Error::storage)?
         .into();
 
-    Ok((wal, ledger))
+    let index =
+        index::redb::IndexStore::open(define_index_path(config)?, config.storage.index_cache)
+            .map_err(Error::storage)?
+            .into();
+
+    Ok((wal, ledger, index))
 }
 
 pub fn setup_tracing(config: &LoggingConfig) -> miette::Result<()> {

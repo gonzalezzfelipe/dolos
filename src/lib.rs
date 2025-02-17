@@ -1,3 +1,4 @@
+pub mod index;
 pub mod ledger;
 pub mod mempool;
 pub mod model;

@@ -2,7 +2,10 @@ use pallas::ledger::traverse::{wellknown::GenesisValues, MultiEraBlock};
 use rocket::http::Status;
 use serde::{Deserialize, Serialize};
 
-use crate::wal::{redb::WalStore, ReadUtils, WalReader};
+use crate::{
+    index::IndexStore,
+    wal::{redb::WalStore, ReadUtils, WalReader},
+};
 
 pub mod hash_or_number;
 pub mod latest;
@@ -32,101 +35,103 @@ pub struct Block {
 impl Block {
     pub fn find_in_wal(
         wal: &WalStore,
+        index: &IndexStore,
         hash_or_number: &str,
         genesis: &GenesisValues,
     ) -> Result<Option<Block>, Status> {
-        let iterator = wal
-            .crawl_from(None)
-            .map_err(|_| Status::ServiceUnavailable)?
-            .into_blocks();
+        let possible_slots = index
+            .get_possible_block_slots_by_block_hash(
+                &hex::decode(hash_or_number).map_err(|_| Status::BadRequest)?,
+            )
+            .map_err(|_| Status::InternalServerError)?;
 
-        let mut curr = None;
-        let mut next = None;
+        let maybe_block = wal
+            .read_sparse_blocks_from_slots(&possible_slots)
+            .map_err(|_| Status::InternalServerError)?
+            .into_iter()
+            .flatten()
+            .filter_map(|raw| {
+                if let Ok(block) = MultiEraBlock::decode(&raw.body) {
+                    if block.hash().to_string() == hash_or_number {
+                        Some(raw.body)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .next();
+
+        let Some(block_body) = maybe_block else {
+            return Err(Status::NotFound);
+        };
+        let block = MultiEraBlock::decode(&block_body).unwrap(); // Safe
+        let header = block.header();
+        let prev = header.previous_hash().map(|h| h.to_string());
+        let block_vrf = match header.vrf_vkey() {
+            Some(v) => Some(
+                bech32::encode::<bech32::Bech32>(bech32::Hrp::parse("vrf_vk").unwrap(), v)
+                    .map_err(|_| Status::ServiceUnavailable)?,
+            ),
+            None => None,
+        };
+        let (epoch, epoch_slot) = block.epoch(genesis);
+
+        let logseq = wal.assert_slot(&block.slot()).unwrap(); // Safe
+
         let mut confirmations = 0;
-
-        // Scan the iterator, if found set the current block and continue to set next and count
-        // confirmations.
-        for value in iterator {
-            if curr.is_none() {
-                if let Some(raw) = value {
-                    let block =
-                        MultiEraBlock::decode(&raw.body).map_err(|_| Status::ServiceUnavailable)?;
-                    if block.hash().to_string() == hash_or_number
-                        || block.number().to_string() == hash_or_number
-                    {
-                        curr = Some(raw.body);
-                    }
-                }
-            } else {
-                confirmations += 1;
-                if next.is_none() {
-                    if let Some(raw) = value {
-                        next = Some(
-                            MultiEraBlock::decode(&raw.body)
-                                .map_err(|_| Status::ServiceUnavailable)?
-                                .hash()
-                                .to_string(),
-                        );
-                    }
-                }
+        let mut next = None;
+        for raw in wal
+            .crawl_from(Some(logseq))
+            .map_err(|_| Status::InternalServerError)?
+            .filter_apply()
+            .into_blocks()
+            .flatten()
+        {
+            // First is the same block.
+            if confirmations > 0 && next.is_none() {
+                next = Some(hex::encode(raw.hash))
             }
+            confirmations += 1;
         }
-        match curr {
-            Some(bytes) => {
-                // Decode the block due to lifetime headaches.
-                let block =
-                    MultiEraBlock::decode(&bytes).map_err(|_| Status::ServiceUnavailable)?;
 
-                let header = block.header();
-                let prev = header.previous_hash().map(|h| h.to_string());
-                let block_vrf = match header.vrf_vkey() {
-                    Some(v) => Some(
-                        bech32::encode::<bech32::Bech32>(bech32::Hrp::parse("vrf_vk").unwrap(), v)
-                            .map_err(|_| Status::ServiceUnavailable)?,
-                    ),
-                    None => None,
-                };
-                let (epoch, epoch_slot) = block.epoch(genesis);
-                Ok(Some(Self {
-                    slot: Some(block.slot()),
-                    hash: block.hash().to_string(),
-                    tx_count: block.tx_count() as u64,
-                    size: block.body_size().unwrap_or(0) as u64,
-                    epoch: Some(epoch),
-                    epoch_slot: Some(epoch_slot),
-                    height: Some(block.number()),
-                    previous_block: prev.clone(),
-                    next_block: next.clone(),
-                    confirmations,
-                    block_vrf,
-                    output: match block.tx_count() {
-                        0 => None,
-                        _ => Some(
-                            block
-                                .txs()
-                                .iter()
-                                .map(|tx| {
-                                    tx.outputs().iter().map(|o| o.value().coin()).sum::<u64>()
-                                })
-                                .sum::<u64>()
-                                .to_string(),
-                        ),
-                    },
-                    fees: match block.tx_count() {
-                        0 => None,
-                        _ => Some(
-                            block
-                                .txs()
-                                .iter()
-                                .map(|tx| tx.fee().unwrap_or(0))
-                                .sum::<u64>()
-                                .to_string(),
-                        ),
-                    },
-                    ..Default::default()
-                }))
-            }
-            _ => Err(Status::ServiceUnavailable),
-        }
+        Ok(Some(Self {
+            slot: Some(block.slot()),
+            hash: block.hash().to_string(),
+            tx_count: block.tx_count() as u64,
+            size: block.body_size().unwrap_or(0) as u64,
+            time: block.wallclock(genesis),
+            epoch: Some(epoch),
+            epoch_slot: Some(epoch_slot),
+            height: Some(block.number()),
+            previous_block: prev.clone(),
+            block_vrf,
+            confirmations,
+            next_block: next,
+            output: match block.tx_count() {
+                0 => None,
+                _ => Some(
+                    block
+                        .txs()
+                        .iter()
+                        .map(|tx| tx.outputs().iter().map(|o| o.value().coin()).sum::<u64>())
+                        .sum::<u64>()
+                        .to_string(),
+                ),
+            },
+            fees: match block.tx_count() {
+                0 => None,
+                _ => Some(
+                    block
+                        .txs()
+                        .iter()
+                        .map(|tx| tx.fee().unwrap_or(0))
+                        .sum::<u64>()
+                        .to_string(),
+                ),
+            },
+            ..Default::default()
+        }))
     }
 }

@@ -15,6 +15,7 @@ pub type UpstreamPort = gasket::messaging::InputPort<RollEvent>;
 pub struct Stage {
     wal: crate::wal::redb::WalStore,
     ledger: crate::state::LedgerStore,
+    index: crate::index::IndexStore,
     genesis: Arc<Genesis>,
     mempool: crate::mempool::Mempool, // Add this line
 
@@ -33,6 +34,7 @@ impl Stage {
     pub fn new(
         wal: crate::wal::redb::WalStore,
         ledger: crate::state::LedgerStore,
+        index: crate::index::IndexStore,
         mempool: crate::mempool::Mempool,
         genesis: Arc<Genesis>,
         max_ledger_history: Option<u64>,
@@ -40,6 +42,7 @@ impl Stage {
         Self {
             wal,
             ledger,
+            index,
             mempool,
             genesis,
             max_ledger_history,
@@ -68,6 +71,7 @@ impl Stage {
 
         let delta = crate::ledger::compute_undo_delta(&block, context).or_panic()?;
         self.ledger.apply(&[delta]).or_panic()?;
+        self.index.apply(&[block.clone()]).or_panic()?;
 
         self.mempool.undo_block(&block);
 
@@ -80,14 +84,16 @@ impl Stage {
         info!(slot, "applying block");
 
         let block = MultiEraBlock::decode(body).or_panic()?;
+        let blocks = [block.clone()];
 
         crate::state::apply_block_batch(
-            [&block],
+            &blocks,
             &self.ledger,
             &self.genesis,
             self.max_ledger_history,
         )
         .or_panic()?;
+        self.index.apply(&blocks).or_panic()?;
 
         self.mempool.apply_block(&block);
 

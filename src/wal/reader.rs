@@ -44,6 +44,9 @@ pub trait WalReader: Clone {
     /// Tries to find the WAL sequence for a chain point
     fn locate_point(&self, point: &ChainPoint) -> Result<Option<LogSeq>, WalError>;
 
+    /// Tries to find the WAL sequence for a chain point
+    fn locate_slot(&self, slot: &BlockSlot) -> Result<Option<LogSeq>, WalError>;
+
     /// Asserts that a chain point exists in the WAL and returns the sequence
     ///
     /// Similar to `locate_point` but it expects a point to be found or
@@ -51,6 +54,14 @@ pub trait WalReader: Clone {
     fn assert_point(&self, point: &ChainPoint) -> Result<LogSeq, WalError> {
         self.locate_point(point)?
             .ok_or(WalError::PointNotFound(point.clone()))
+    }
+
+    /// Asserts that a chain point exists in the WAL and returns the sequence
+    ///
+    /// Similar to `locate_point` but it expects a point to be found or
+    /// otherwise return a NotFound error.
+    fn assert_slot(&self, slot: &BlockSlot) -> Result<LogSeq, WalError> {
+        self.locate_slot(slot)?.ok_or(WalError::SlotNotFound(*slot))
     }
 
     fn find_start(&self) -> Result<Option<(LogSeq, ChainPoint)>, WalError> {
@@ -158,7 +169,30 @@ pub trait WalReader: Clone {
         Ok(block)
     }
 
+    fn read_block_from_slot(&self, slot: &BlockSlot) -> Result<Option<RawBlock>, WalError> {
+        let seq = self.assert_slot(slot)?;
+
+        let block = self
+            .crawl_from(Some(seq))?
+            .filter_apply()
+            .into_blocks()
+            .flatten()
+            .next();
+
+        Ok(block)
+    }
+
     fn read_sparse_blocks(&self, points: &[ChainPoint]) -> Result<Vec<RawBlock>, WalError> {
         points.iter().map(|p| self.read_block(p)).try_collect()
+    }
+
+    fn read_sparse_blocks_from_slots(
+        &self,
+        slots: &[BlockSlot],
+    ) -> Result<Vec<Option<RawBlock>>, WalError> {
+        slots
+            .iter()
+            .map(|p| self.read_block_from_slot(p))
+            .try_collect()
     }
 }

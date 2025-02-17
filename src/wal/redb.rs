@@ -51,6 +51,13 @@ fn point_to_augmented_slot(point: &ChainPoint) -> AugmentedBlockSlot {
     }
 }
 
+fn slot_to_augmented_slot(slot: &BlockSlot) -> AugmentedBlockSlot {
+    match slot {
+        0 => -1i128,
+        x => *x as i128,
+    }
+}
+
 pub struct WalIter<'a>(Range<'a, LogSeq, LogValue>);
 
 impl Iterator for WalIter<'_> {
@@ -505,6 +512,16 @@ impl super::WalReader for WalStore {
         let table = rx.open_table(POS)?;
 
         let pos_key = point_to_augmented_slot(point);
+        let pos = table.get(pos_key)?.map(|x| x.value());
+
+        Ok(pos)
+    }
+
+    fn locate_slot(&self, slot: &super::BlockSlot) -> Result<Option<LogSeq>, WalError> {
+        let rx = self.db.begin_read()?;
+        let table = rx.open_table(POS)?;
+
+        let pos_key = slot_to_augmented_slot(slot);
         let pos = table.get(pos_key)?.map(|x| x.value());
 
         Ok(pos)

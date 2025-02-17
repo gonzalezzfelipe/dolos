@@ -58,7 +58,7 @@ pub fn run(
     let encoder = GzEncoder::new(export_file, Compression::default());
     let mut archive = Builder::new(encoder);
 
-    let (wal, ledger) = crate::common::open_data_stores(config)?;
+    let (wal, ledger, _) = crate::common::open_data_stores(config)?;
 
     prepare_wal(wal, &pb)?;
 

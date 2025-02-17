@@ -1,9 +1,10 @@
+use pallas::ledger::traverse::wellknown::GenesisValues;
 use rocket::routes;
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ledger::pparams::Genesis, state::LedgerStore, wal::redb::WalStore};
+use crate::{index::IndexStore, state::LedgerStore, wal::redb::WalStore};
 
 mod routes;
 
@@ -14,9 +15,10 @@ pub struct Config {
 
 pub async fn serve(
     cfg: Config,
-    genesis: Arc<Genesis>,
+    genesis: GenesisValues,
     wal: WalStore,
     ledger: LedgerStore,
+    index: IndexStore,
     _exit: CancellationToken,
 ) -> Result<(), rocket::Error> {
     // TODO: connect cancellation token to rocket shutdown
@@ -37,6 +39,7 @@ pub async fn serve(
         .manage(genesis)
         .manage(wal)
         .manage(ledger)
+        .manage(index)
         .mount(
             "/",
             routes![

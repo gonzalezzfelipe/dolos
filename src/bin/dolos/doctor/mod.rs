@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::feedback::Feedback;
 
+mod rebuild_index;
 mod rebuild_ledger;
 mod wal_integrity;
 
@@ -11,6 +12,8 @@ pub enum Command {
     RebuildLedger(rebuild_ledger::Args),
     /// checks the integrity of the WAL records
     WalIntegrity(wal_integrity::Args),
+    /// rebuilds the entity indexes with WAL records
+    RebuildIndex(rebuild_index::Args),
 }
 
 #[derive(Debug, Parser)]
@@ -23,6 +26,7 @@ pub fn run(config: &super::Config, args: &Args, feedback: &Feedback) -> miette::
     match &args.command {
         Command::RebuildLedger(x) => rebuild_ledger::run(config, x, feedback)?,
         Command::WalIntegrity(x) => wal_integrity::run(config, x)?,
+        Command::RebuildIndex(x) => rebuild_index::run(config, x, feedback)?,
     }
 
     Ok(())
